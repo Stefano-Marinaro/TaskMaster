@@ -1,23 +1,26 @@
 var builder = WebApplication.CreateBuilder(args);
 
+//Builder, un oggetto che raccoglie insime tutta 
+// la configurazione dell'app prima che venga avviata
+//args, rappresenta gli argomenti della riga di comando passati all'applicazione
+
 // Add services to the container.
 
-builder.Services.AddControllers();
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-builder.Services.AddOpenApi();
+builder.Services.AddControllers(); //abilita i controller per gestire le richieste HTTP
+builder.Services.AddSwaggerGen(); //usa le informazioni raccolte da APIExplorer per costruire il documento OpenApi, che swagger UI userà per disegnare l'interfaccia
+builder.Services. AddEndpointsApiExplorer(); //ispeziona i controller per capire quali endpoint esistono
 
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
-    app.MapOpenApi();
+    app.UseSwagger();
+    app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
-
+app.UseHttpsRedirection(); //redireziona le richieste HTTP a HTTPS
 app.UseAuthorization();
-
-app.MapControllers();
+app.MapControllers(); // mappa le richieste HTTP ai controller
 
 app.Run();
