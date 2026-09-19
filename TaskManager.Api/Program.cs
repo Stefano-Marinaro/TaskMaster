@@ -1,4 +1,11 @@
+using Microsoft.EntityFrameworkCore;
+using TaskManager.Api.Data;
+
 var builder = WebApplication.CreateBuilder(args);
+
+//metodo di registrazione di un DbContext nella Dependency Injection
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
 //Builder, un oggetto che raccoglie insime tutta 
 // la configurazione dell'app prima che venga avviata
@@ -24,3 +31,6 @@ app.UseAuthorization();
 app.MapControllers(); // mappa le richieste HTTP ai controller
 
 app.Run();
+
+//Migration un file generato automaticamente da EF Core che descrive le istruzioni 
+//SQL necessarie per creare le tabelle nel DB basandosi sulle mie classi e sul DbContext 

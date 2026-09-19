@@ -7,6 +7,14 @@
         public string? Description { get; set; }
         public TaskState Status { get; set; } = TaskState.ToDo;
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+        public int ReferenceProjectId { get; set; }
+        public Project? ReferenceProject { get; set; }
+
+        public int? AssignedUserId { get; set; }
+        public User? AssignedUser { get; set; }
+
+
     }
 
     public enum TaskState//lo status dell'attività
