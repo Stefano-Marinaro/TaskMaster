@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using TaskManager.Api.Data;
+using TaskManager.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -15,8 +16,8 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 builder.Services.AddControllers(); //abilita i controller per gestire le richieste HTTP
 builder.Services.AddSwaggerGen(); //usa le informazioni raccolte da APIExplorer per costruire il documento OpenApi, che swagger UI userà per disegnare l'interfaccia
-builder.Services. AddEndpointsApiExplorer(); //ispeziona i controller per capire quali endpoint esistono
-
+builder.Services.AddEndpointsApiExplorer(); //ispeziona i controller per capire quali endpoint esistono
+builder.Services.AddSingleton<PasswordService>();
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.

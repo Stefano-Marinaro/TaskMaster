@@ -1,6 +1,8 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Linq;
 using TaskManager.Api.Data;
+using TaskManager.Api.Dtos;
 using TaskManager.Api.Models;
 
 namespace TaskManager.Api.Controllers
@@ -17,28 +19,39 @@ namespace TaskManager.Api.Controllers
         }
 
         [HttpGet]
-        public async Task<List<User>> GetAllAsync()
+        public async Task<List<UserDto>> GetAllAsync()
         {
-            return await _context.Users.ToListAsync();
+            var users = await _context.Users.ToListAsync();
+            var dto = users.Select(u => new UserDto
+            {
+                UserName = u.UserName,
+                Id = u.Id,
+                Email = u.Email,
+                Role = u.Role
+            }).ToList();
+            return dto;
         }
 
         [HttpGet("{id}")]
-        public async Task<ActionResult<User>> GetById(int id)
+        public async Task<ActionResult<UserDto>> GetById(int id)
         {
             var existing = await _context.Users.FindAsync(id);
-            return existing == null ? NotFound() : Ok(existing);
+            if (existing == null) return NotFound();
+            var dto = new UserDto { Id = existing.Id, UserName = existing.UserName, Email = existing.Email, Role = existing.Role };
+            return Ok(dto);
         }
 
         [HttpPost]
-        public async Task<ActionResult<User>> AddAsync(User newUser)
+        public async Task<ActionResult<UserDto>> AddAsync(User newUser)
         {
             await _context.Users.AddAsync(newUser);
             await _context.SaveChangesAsync();
-            return CreatedAtAction(nameof(GetById), new { id = newUser.Id }, newUser);
+            var dto = new UserDto { Id = newUser.Id, UserName = newUser.UserName, Email = newUser.Email, Role = newUser.Role };
+            return CreatedAtAction(nameof(GetById), new { id = newUser.Id }, dto);
         }
 
         [HttpPut("{id}")]
-        public async Task<ActionResult> UpdateAsync(int id, User updatedUser)
+        public async Task<ActionResult> UpdateAsync(int id, UserDto updatedUser)
         {
             var existing = await _context.Users.FindAsync(id);
             if (existing == null)
@@ -48,8 +61,6 @@ namespace TaskManager.Api.Controllers
 
             existing.UserName = updatedUser.UserName;
             existing.Email = updatedUser.Email;
-           
-
             await _context.SaveChangesAsync();
             return NoContent();
         }
