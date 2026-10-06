@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Reflection.Metadata.Ecma335;
 using TaskManager.Api.Data;
@@ -8,6 +9,7 @@ namespace TaskManager.Api.Controllers
 {
     [ApiController] //dic equesta è un API, gestisci automaticamente la validazione dei dati in ingresso e le risposte in formato JSON
     [Route("api/[controller]")] //definisce la route/URL del controller
+    [Authorize] //richiede un token JWT valido per accedere a qualsiasi endpoint di questo controller
     public class ProjectsController : ControllerBase
     {
         private readonly AppDbContext _context;

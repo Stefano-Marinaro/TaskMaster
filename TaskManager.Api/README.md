@@ -347,9 +347,9 @@ var userDtos = users.Select(u => new UserDto
 
 ---
 
-## 9. Autenticazione JWT (in corso)
+## 9. Autenticazione JWT (completata)
 
-**Punto in cui si è arrivati**: hashing delle password completato, endpoint di registrazione in fase di scrittura. Login e generazione/validazione dei token JWT ancora da fare.
+**Punto in cui si è arrivati**: hashing delle password, registrazione, login con generazione del token, validazione del token sulle richieste successive e protezione degli endpoint con `[Authorize]` sono tutti completati e funzionanti.
 
 ### 9.1 Il problema che risolve
 
@@ -404,12 +404,12 @@ Registrato in `Program.cs` come Singleton (nessuno stato mutevole interno):
 builder.Services.AddSingleton<PasswordService>();
 ```
 
-### 9.5 `RegisterDto` (in corso)
+### 9.5 `RegisterDto` e `LoginDto` — i dati in ingresso
 
 - Cartella: `Dtos/`
-- File: `RegisterDto.cs`
 
 ```csharp
+// RegisterDto.cs
 public class RegisterDto
 {
     public string UserName { get; set; } = string.Empty;
@@ -420,50 +420,275 @@ public class RegisterDto
 
 Motivo: il client non deve mai calcolare l'hash da solo — manda la password in chiaro (su connessione HTTPS), e il server la hasha prima di salvarla.
 
-### 9.6 `AuthController` (in corso)
+```csharp
+// LoginDto.cs
+public class LoginDto
+{
+    public string Email { get; set; } = string.Empty;
+    public string Password { get; set; } = string.Empty;
+}
+```
+
+Per il login basta l'identificativo (email) e la password in chiaro: il server ritrova l'utente, rifà l'hash della password ricevuta e lo confronta con quello salvato (non si "decifra" mai un hash, si verifica per confronto — vedi 9.4).
+
+### 9.6 `AuthResponseDto` — i dati in uscita dal login
+
+- Cartella: `Dtos/`
+- File: `AuthResponseDto.cs`
+
+```csharp
+public class AuthResponseDto
+{
+    public string Token { get; set; } = string.Empty;
+    public DateTime ExpiresAt { get; set; }
+    public UserDto User { get; set; } = null!;
+}
+```
+
+Al login il client riceve non solo il token, ma anche la sua scadenza (utile al frontend per sapere quando richiedere un nuovo login) e i dati pubblici dell'utente (`UserDto`, senza `PasswordHash`) — evita una seconda chiamata a `GET /api/users/{id}` subito dopo il login solo per sapere "chi sono".
+
+### 9.7 `JwtSettings` — la configurazione del token
+
+- Cartella: `Services/`
+- File: `JwtSettings.cs`
+
+```csharp
+public class JwtSettings
+{
+    public string Key { get; set; } = string.Empty;        // chiave segreta per firmare/verificare il token
+    public string Issuer { get; set; } = string.Empty;     // "chi" ha emesso il token (la nostra API)
+    public string Audience { get; set; } = string.Empty;   // "per chi" è pensato il token (il nostro client)
+    public int ExpireMinutes { get; set; } = 60;            // durata di validità, in minuti
+}
+```
+
+Questa classe è un semplice contenitore (POCO — Plain Old C# Object) che rispecchia la struttura della sezione `Jwt` dentro `appsettings.json`:
+
+```json
+"Jwt": {
+  "Key": "<stringa lunga e segreta, generata a caso>",
+  "Issuer": "TaskManager.Api",
+  "Audience": "TaskManager.Client",
+  "ExpireMinutes": 60
+}
+```
+
+Il collegamento tra il JSON e la classe C# avviene tramite il pattern **Options** di ASP.NET Core (`IOptions<T>`), configurato in `Program.cs`:
+
+```csharp
+builder.Services.Configure<JwtSettings>(builder.Configuration.GetSection("Jwt"));
+```
+
+> **Sicurezza — la chiave NON va mai committata in chiaro**: in `appsettings.json` il campo `Jwt:Key` contiene solo un placeholder descrittivo, non il valore reale. Il valore vero è salvato SOLO in locale con i **.NET User Secrets** (fuori dalla cartella del progetto, quindi non tracciato da Git né mai inviato a GitHub):
+> ```bash
+> dotnet user-secrets init                               # crea un UserSecretsId nel .csproj (quello sì va committato, non è un segreto)
+> dotnet user-secrets set "Jwt:Key" "<chiave-lunga-e-casuale>"
+> ```
+> `WebApplication.CreateBuilder(args)` carica automaticamente i User Secrets quando l'ambiente è `Development`, con priorità più alta di `appsettings.json` — quindi il valore reale sovrascrive il placeholder a runtime, senza bisogno di nessuna configurazione aggiuntiva in `Program.cs`. In produzione (dove i User Secrets non si usano) la stessa chiave andrebbe fornita con una variabile d'ambiente (`Jwt__Key`, doppio underscore per i livelli annidati) o un servizio di secret management.
+
+### 9.8 `TokenService` — generazione del token JWT
+
+- Cartella: `Services/`
+- File: `TokenService.cs`
+- Pacchetto NuGet aggiuntivo: `Microsoft.AspNetCore.Authentication.JwtBearer` (porta con sé anche le classi per CREARE un token, non solo per validarlo)
+
+```csharp
+public class TokenService
+{
+    private readonly JwtSettings _settings;
+
+    public TokenService(IOptions<JwtSettings> options)
+    {
+        _settings = options.Value;   // IOptions<T> espone la configurazione già "risolta" tramite .Value
+    }
+
+    public string CreateToken(User user)
+    {
+        var claims = new List<Claim>
+        {
+            new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
+            new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
+            new Claim(ClaimTypes.Name, user.UserName),
+            new Claim(ClaimTypes.Email, user.Email),
+            new Claim(ClaimTypes.Role, user.Role.ToString())
+        };
+
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_settings.Key));
+        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+
+        var token = new JwtSecurityToken(
+            issuer: _settings.Issuer,
+            audience: _settings.Audience,
+            claims: claims,
+            expires: DateTime.UtcNow.AddMinutes(_settings.ExpireMinutes),
+            signingCredentials: creds
+        );
+
+        return new JwtSecurityTokenHandler().WriteToken(token);
+    }
+
+    public DateTime GetExpiration() => DateTime.UtcNow.AddMinutes(_settings.ExpireMinutes);
+}
+```
+
+Concetti chiave:
+- **Claim**: una singola affermazione su chi è l'utente ("il suo Id è 5", "il suo ruolo è Owner"). Diventano il contenuto del payload del token (vedi 9.3) — leggibili da chiunque, quindi niente dati sensibili (mai la password, nemmeno hashata).
+- **SymmetricSecurityKey**: la chiave segreta trasformata in un formato utilizzabile per firmare. "Simmetrica" perché la STESSA chiave serve sia per firmare (al login) che per verificare (nelle richieste successive) — per questo deve restare segreta e conosciuta solo dal server.
+- **SigningCredentials**: abbina la chiave a un algoritmo di firma specifico (qui `HmacSha256`).
+- **`JwtSecurityTokenHandler().WriteToken(...)`**: serializza tutto (header + payload + signature) nella stringa finale `xxxxx.yyyyy.zzzzz` che viene restituita al client.
+
+Registrato in `Program.cs` come Singleton (nessuno stato mutevole interno, come `PasswordService`):
+```csharp
+builder.Services.AddSingleton<TokenService>();
+```
+
+### 9.9 `AuthController` — endpoint `register` e `login`
 
 - Cartella: `Controllers/`
 - File: `AuthController.cs`
 - Route: `api/auth`
 
-Richiede DUE servizi nel costruttore (primo esempio di DI con più dipendenze contemporaneamente):
+Il costruttore ora riceve TRE servizi:
 
 ```csharp
 public class AuthController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly PasswordService _passwordService;
+    private readonly TokenService _tokenService;
 
-    public AuthController(AppDbContext context, PasswordService passwordService)
+    public AuthController(AppDbContext context, PasswordService passwordService, TokenService tokenService)
     {
         _context = context;
         _passwordService = passwordService;
+        _tokenService = tokenService;
     }
+```
 
-    // metodo Register in corso di scrittura:
-    // 1. Riceve un RegisterDto dal body
-    // 2. Crea un nuovo User copiando UserName/Email dal DTO
-    // 3. Calcola PasswordHash con _passwordService.HashPassword(user, dto.Password)
-    // 4. Salva con AddAsync + SaveChangesAsync
-    // 5. Restituisce una risposta (da definire: User completo? UserDto? conferma?)
+**`POST /api/auth/register`** — crea l'utente:
+```csharp
+[HttpPost("register")]
+public async Task<ActionResult<UserDto>> Register(RegisterDto dto)
+{
+    var newUser = new User { UserName = dto.UserName, Email = dto.Email };
+    newUser.PasswordHash = _passwordService.HashPassword(newUser, dto.Password);
+
+    await _context.Users.AddAsync(newUser);
+    await _context.SaveChangesAsync();
+
+    var userDto = new UserDto { Id = newUser.Id, UserName = newUser.UserName, Email = newUser.Email, Role = newUser.Role };
+    return Ok(userDto);
 }
 ```
 
-### 9.7 Prossimi passi da affrontare
+**`POST /api/auth/login`** — verifica le credenziali e restituisce il token:
+```csharp
+[HttpPost("login")]
+public async Task<ActionResult<AuthResponseDto>> Login(LoginDto dto)
+{
+    var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == dto.Email);
+    if (user == null)
+        return Unauthorized("Email o password non validi.");
 
-- Completare il metodo `Register`
-- Endpoint `Login` (verifica credenziali + generazione del token JWT)
-- Configurazione della validazione JWT in `Program.cs` (chiave segreta, parametri di validazione)
-- Attributo `[Authorize]` per proteggere gli endpoint esistenti
-- Differenziazione dei permessi in base al `Role` (Owner vs Member)
+    var isPasswordValid = _passwordService.VerifyPassword(user, user.PasswordHash, dto.Password);
+    if (!isPasswordValid)
+        return Unauthorized("Email o password non validi.");
+
+    var token = _tokenService.CreateToken(user);
+
+    return Ok(new AuthResponseDto
+    {
+        Token = token,
+        ExpiresAt = _tokenService.GetExpiration(),
+        User = new UserDto { Id = user.Id, UserName = user.UserName, Email = user.Email, Role = user.Role }
+    });
+}
+```
+
+**Dettaglio voluto**: il messaggio di errore è identico sia se l'email non esiste sia se la password è sbagliata ("Email o password non validi."). Distinguere i due casi (es. "email non trovata" vs "password sbagliata") rivelerebbe a un attaccante quali email sono registrate nel sistema — informazione che non deve mai uscire da un endpoint pubblico.
+
+### 9.10 Configurazione in `Program.cs` — abilitare la validazione del JWT
+
+Tre aggiunte, da fare PRIMA di `builder.Build()`:
+
+```csharp
+// 1. Collega la sezione "Jwt" di appsettings.json alla classe JwtSettings
+builder.Services.Configure<JwtSettings>(builder.Configuration.GetSection("Jwt"));
+var jwtSettings = builder.Configuration.GetSection("Jwt").Get<JwtSettings>()!;
+
+// 2. Registra e configura lo schema di autenticazione "Bearer" (JWT)
+builder.Services.AddAuthentication(options =>
+{
+    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+})
+.AddJwtBearer(options =>
+{
+    options.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidateIssuer = true,
+        ValidIssuer = jwtSettings.Issuer,
+        ValidateAudience = true,
+        ValidAudience = jwtSettings.Audience,
+        ValidateLifetime = true,                 // rifiuta token scaduti
+        ValidateIssuerSigningKey = true,
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings.Key)),
+        ClockSkew = TimeSpan.Zero                 // nessun margine extra sulla scadenza
+    };
+});
+
+// 3. Abilita il sistema di autorizzazione (necessario per far funzionare [Authorize])
+builder.Services.AddAuthorization();
+```
+
+E una modifica DOPO `builder.Build()`, nella pipeline HTTP — **l'ordine qui è importante**:
+
+```csharp
+app.UseHttpsRedirection();
+app.UseAuthentication();   // legge il token dalla richiesta e popola HttpContext.User — DEVE venire prima
+app.UseAuthorization();    // controlla se HttpContext.User ha il permesso di accedere all'endpoint richiesto
+app.MapControllers();
+```
+
+Se si invertisse l'ordine (`UseAuthorization()` prima di `UseAuthentication()`), il controllo dei permessi avverrebbe prima che il server sappia chi è l'utente — fallirebbe sempre o si comporterebbe in modo imprevedibile, perché `HttpContext.User` non sarebbe ancora stato popolato dal token.
+
+### 9.11 `[Authorize]` — proteggere gli endpoint esistenti
+
+Aggiunto l'attributo `[Authorize]` (namespace `Microsoft.AspNetCore.Authorization`) a livello di CLASSE sui controller che devono richiedere un utente autenticato, in modo che si applichi automaticamente a tutti i loro metodi:
+
+```csharp
+[ApiController]
+[Route("api/[controller]")]
+[Authorize]   // ogni richiesta a questo controller deve avere un token JWT valido nell'header Authorization
+public class ProjectsController : ControllerBase { ... }
+```
+
+Applicato a `ProjectsController`, `TasksController`, `CommentsController`, `UsersController`. **`AuthController` resta SENZA `[Authorize]`**: `register` e `login` devono necessariamente restare accessibili a chi non ha ancora un token (altrimenti nessuno potrebbe mai ottenerne uno).
+
+Senza un token valido, una richiesta a un endpoint protetto riceve **401 Unauthorized** automaticamente, prima ancora che il codice del controller venga eseguito.
+
+### 9.12 Come si usa dal lato client (es. da Swagger/Postman/frontend)
+
+1. `POST /api/auth/register` con `{ "userName", "email", "password" }` → crea l'utente.
+2. `POST /api/auth/login` con `{ "email", "password" }` → risponde con `{ "token", "expiresAt", "user" }`.
+3. Ogni richiesta successiva a un endpoint protetto deve includere l'header:
+   ```
+   Authorization: Bearer <token ricevuto al login>
+   ```
+4. Il server valida firma, issuer, audience e scadenza del token (vedi 9.10); se tutto è valido, popola `HttpContext.User` con i claims e lascia proseguire la richiesta verso il controller.
+
+### 9.13 Differenziazione dei permessi per ruolo (non ancora affrontata)
+
+`[Authorize]` da solo verifica solo "sei autenticato?", non "hai il ruolo giusto?". Il passo successivo, non ancora implementato, sarebbe usare `[Authorize(Roles = "Owner")]` su endpoint specifici (es. cancellare un progetto) per restringerli a un ruolo preciso, sfruttando il claim `ClaimTypes.Role` già incluso nel token (vedi 9.8).
 
 ---
 
 ## 10. Piano futuro (non ancora affrontato)
 
-- Completamento autenticazione JWT (vedi sezione 9.7)
+- Differenziazione dei permessi per ruolo con `[Authorize(Roles = "...")]` (vedi sezione 9.13)
+- Spostare la `Jwt:Key` fuori da `appsettings.json` (user-secrets in locale, variabile d'ambiente/secret manager in produzione — vedi nota in 9.7)
 - Test con dati realmente collegati tra loro (Project con Task assegnati a User specifici) — verificare dal vivo il comportamento delle relazioni e il rischio di cicli di serializzazione JSON quando si useranno `Include()`
-- Frontend in C# (Blazor) per una demo funzionante del progetto, da costruire DOPO aver completato e consolidato le API
+- Frontend, da costruire ora che le API e l'autenticazione sono funzionanti
 - Possibili raffinamenti futuri:
   - `OnModelCreating` per configurazioni esplicite su relazioni più complesse (es. se la relazione molti-a-molti User-Project dovesse arricchirsi di dati propri, come il ruolo dell'utente in quello specifico progetto)
   - Endpoint dedicato per spostare un `TaskItem` tra `Project` diversi, separato dal PUT generico di aggiornamento (separazione delle responsabilità)
@@ -501,6 +726,7 @@ Di seguito tutti i comandi bash/terminale incontrati durante lo sviluppo, nell'o
 | `dotnet add package Microsoft.EntityFrameworkCore.SqlServer` | Installa il provider Entity Framework Core per SQL Server, necessario per collegarsi a un database SQL Server/LocalDB |
 | `dotnet add package Microsoft.EntityFrameworkCore.Tools` | Installa gli strumenti da riga di comando di Entity Framework Core (necessari per i comandi `dotnet ef ...`) |
 | `dotnet add package Microsoft.AspNetCore.Identity` | Installa le classi di ASP.NET Core Identity, usate per `PasswordHasher<T>` (hashing e verifica sicura delle password) |
+| `dotnet add package Microsoft.AspNetCore.Authentication.JwtBearer` | Installa le classi per generare e validare token JWT (`JwtSecurityToken`, `TokenValidationParameters`, schema di autenticazione `Bearer`) |
 | `dotnet tool install --global dotnet-ef` | (Solo se `dotnet ef` non viene riconosciuto) Installa globalmente lo strumento a riga di comando di Entity Framework Core |
 
 ### 11.4 Migrations e database (Entity Framework Core)
