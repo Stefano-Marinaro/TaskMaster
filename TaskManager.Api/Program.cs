@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -17,7 +18,14 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 // Add services to the container.
 
-builder.Services.AddControllers(); //abilita i controller per gestire le richieste HTTP
+builder.Services.AddControllers() //abilita i controller per gestire le richieste HTTP
+    .AddJsonOptions(options =>
+        //Per difetto, System.Text.Json serializza un enum (es. UserRole) come il suo
+        //valore numerico sottostante ("role":1), illeggibile per chi consuma l'API
+        //(e fragile: se l'ordine dei valori nell'enum cambiasse, il significato dei
+        //numeri già salvati cambierebbe con esso). JsonStringEnumConverter lo
+        //serializza invece come il nome testuale del valore ("role":"Member").
+        options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 builder.Services.AddSwaggerGen(); //usa le informazioni raccolte da APIExplorer per costruire il documento OpenApi, che swagger UI userà per disegnare l'interfaccia
 builder.Services.AddEndpointsApiExplorer(); //ispeziona i controller per capire quali endpoint esistono
 builder.Services.AddSingleton<PasswordService>();

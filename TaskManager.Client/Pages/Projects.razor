@@ -128,43 +128,69 @@ else
             return;
         }
 
-        var success = await ProjectService.CreateAsync(newProject);
-        if (success)
+        // Ogni azione che chiama l'API è avvolta in un try/catch: se la richiesta
+        // non arriva nemmeno a destinazione (API spenta, CORS, certificato non
+        // attendibile...), ProjectService lancia un'eccezione — senza catturarla
+        // qui, risalirebbe fino a Blazor e mostrerebbe il banner generico
+        // "An unhandled error has occurred" invece di un messaggio comprensibile.
+        try
         {
-            newProject.Name = string.Empty;
-            newProject.Description = string.Empty;
-            await LoadProjectsAsync();
+            var success = await ProjectService.CreateAsync(newProject);
+            if (success)
+            {
+                newProject.Name = string.Empty;
+                newProject.Description = string.Empty;
+                await LoadProjectsAsync();
+            }
+            else
+            {
+                errorMessage = "Creazione del progetto non riuscita.";
+            }
         }
-        else
+        catch (Exception ex)
         {
-            errorMessage = "Creazione del progetto non riuscita.";
+            errorMessage = $"Impossibile contattare il server ({ex.Message}).";
         }
     }
 
     private async Task HandleUpdateAsync(ProjectModel project)
     {
-        var success = await ProjectService.UpdateAsync(project.Id, project);
-        if (success)
+        try
         {
-            editingProjectId = null;
-            await LoadProjectsAsync();
+            var success = await ProjectService.UpdateAsync(project.Id, project);
+            if (success)
+            {
+                editingProjectId = null;
+                await LoadProjectsAsync();
+            }
+            else
+            {
+                errorMessage = "Aggiornamento del progetto non riuscito.";
+            }
         }
-        else
+        catch (Exception ex)
         {
-            errorMessage = "Aggiornamento del progetto non riuscito.";
+            errorMessage = $"Impossibile contattare il server ({ex.Message}).";
         }
     }
 
     private async Task HandleDeleteAsync(int id)
     {
-        var success = await ProjectService.DeleteAsync(id);
-        if (success)
+        try
         {
-            await LoadProjectsAsync();
+            var success = await ProjectService.DeleteAsync(id);
+            if (success)
+            {
+                await LoadProjectsAsync();
+            }
+            else
+            {
+                errorMessage = "Eliminazione del progetto non riuscita.";
+            }
         }
-        else
+        catch (Exception ex)
         {
-            errorMessage = "Eliminazione del progetto non riuscita.";
+            errorMessage = $"Impossibile contattare il server ({ex.Message}).";
         }
     }
 }
