@@ -50,6 +50,23 @@ builder.Services.AddAuthentication(options =>
 
 builder.Services.AddAuthorization();
 
+//Configura il CORS (Cross-Origin Resource Sharing): per difetto, un browser blocca
+//le richieste JavaScript/WebAssembly fatte da un'origine (protocollo+dominio+porta)
+//verso un'origine diversa. Il frontend Blazor (es. https://localhost:7159) e questa
+//API (es. https://localhost:7076) sono due origini diverse pur girando sulla stessa
+//macchina: senza questa policy esplicita, ogni chiamata dal client verrebbe rifiutata
+//dal browser ancora prima che arrivi al server.
+const string ClientCorsPolicy = "ClientCorsPolicy";
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy(ClientCorsPolicy, policy =>
+    {
+        policy.WithOrigins("https://localhost:7159", "http://localhost:5097") // indirizzi di TaskManager.Client in sviluppo
+              .AllowAnyHeader()   // serve per lasciar passare anche l'header "Authorization: Bearer ..."
+              .AllowAnyMethod();  // GET, POST, PUT, DELETE
+    });
+});
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
@@ -60,6 +77,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection(); //redireziona le richieste HTTP a HTTPS
+app.UseCors(ClientCorsPolicy); //applica la policy CORS definita sopra - va PRIMA di Authentication/Authorization
 app.UseAuthentication(); //verifica il token JWT presente nella richiesta e popola HttpContext.User
 app.UseAuthorization();
 app.MapControllers(); // mappa le richieste HTTP ai controller

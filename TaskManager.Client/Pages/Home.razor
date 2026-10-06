@@ -1,0 +1,24 @@
+@page "/"
+
+<PageTitle>TaskMaster</PageTitle>
+
+<h1>TaskMaster</h1>
+
+<p>Benvenuto nel frontend di TaskMaster, il task manager costruito con ASP.NET Core Web API (backend) e Blazor WebAssembly (questo frontend).</p>
+
+@*
+    <AuthorizeView> mostra un contenuto diverso a seconda che l'utente sia
+    autenticato o no, leggendo lo stesso stato di autenticazione calcolato
+    da ApiAuthenticationStateProvider (vedi Services/ApiAuthenticationStateProvider.cs).
+    È il modo standard di Blazor per mostrare/nascondere pezzi di UI in base al login,
+    senza dover scrivere "if" manuali ovunque.
+*@
+<AuthorizeView>
+    <Authorized>
+        <p>Sei autenticato come <strong>@context.User.Identity?.Name</strong>.</p>
+        <a class="btn btn-primary" href="/projects">Vai ai tuoi progetti</a>
+    </Authorized>
+    <NotAuthorized>
+        <p>Per iniziare, <a href="/login">accedi</a> oppure <a href="/register">crea un account</a>.</p>
+    </NotAuthorized>
+</AuthorizeView>

@@ -1,0 +1,57 @@
+@page "/login"
+@inject AuthService AuthService
+@inject NavigationManager Navigation
+
+<PageTitle>Accedi</PageTitle>
+
+<h1>Accedi</h1>
+
+<EditForm Model="@loginModel" OnValidSubmit="HandleLoginAsync" FormName="login">
+    <DataAnnotationsValidator />
+    <ValidationSummary class="text-danger" />
+
+    <div class="mb-3">
+        <label class="form-label" for="email">Email</label>
+        <InputText id="email" class="form-control" @bind-Value="loginModel.Email" />
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label" for="password">Password</label>
+        <InputText id="password" type="password" class="form-control" @bind-Value="loginModel.Password" />
+    </div>
+
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-danger">@errorMessage</div>
+    }
+
+    <button type="submit" class="btn btn-primary" disabled="@isLoading">
+        @(isLoading ? "Accesso in corso..." : "Accedi")
+    </button>
+</EditForm>
+
+<p class="mt-3">Non hai un account? <a href="/register">Registrati</a>.</p>
+
+@code {
+    private readonly LoginModel loginModel = new();
+    private string? errorMessage;
+    private bool isLoading;
+
+    private async Task HandleLoginAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+
+        // AuthService.LoginAsync restituisce null se tutto è andato bene,
+        // oppure un messaggio d'errore pronto da mostrare all'utente.
+        errorMessage = await AuthService.LoginAsync(loginModel);
+
+        isLoading = false;
+
+        if (errorMessage is null)
+        {
+            // Login riuscito: portiamo l'utente alla pagina protetta dei progetti.
+            Navigation.NavigateTo("/projects");
+        }
+    }
+}

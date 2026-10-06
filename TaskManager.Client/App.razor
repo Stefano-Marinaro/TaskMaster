@@ -1,0 +1,23 @@
+<!--
+    CascadingAuthenticationState rende disponibile lo stato di autenticazione
+    (chi è l'utente loggato, se c'è) a TUTTI i componenti figli, senza doverlo
+    passare manualmente da un componente all'altro — da qui il nome "cascading".
+-->
+<CascadingAuthenticationState>
+    <Router AppAssembly="@typeof(App).Assembly" NotFoundPage="typeof(Pages.NotFound)">
+        <Found Context="routeData">
+            <!--
+                AuthorizeRouteView, al posto del semplice RouteView, controlla
+                automaticamente se la pagina richiesta ha l'attributo [Authorize]:
+                in caso affermativo, mostra la pagina solo se l'utente è loggato,
+                altrimenti mostra il contenuto di <NotAuthorized>.
+            -->
+            <AuthorizeRouteView RouteData="@routeData" DefaultLayout="@typeof(MainLayout)">
+                <NotAuthorized>
+                    <p class="p-3">Devi accedere per vedere questa pagina. <a href="/login">Vai al login</a>.</p>
+                </NotAuthorized>
+            </AuthorizeRouteView>
+            <FocusOnNavigate RouteData="@routeData" Selector="h1" />
+        </Found>
+    </Router>
+</CascadingAuthenticationState>

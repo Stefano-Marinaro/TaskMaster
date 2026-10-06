@@ -27,7 +27,7 @@ Template usato: **ASP.NET Core Web API** (non MVC/Razor Pages/Blazor)
 Perché "Web API" e non altri template:
 - MVC/Razor Pages generano anche l'HTML del frontend (pagine complete)
 - Blazor permette di scrivere il frontend in C#
-- Web API restituisce SOLO dati (JSON), pensata per essere "consumata" da qualcos'altro: un'app React, mobile, o un frontend separato (nel nostro caso, in futuro, un frontend Blazor)
+- Web API restituisce SOLO dati (JSON), pensata per essere "consumata" da qualcos'altro: un'app React, mobile, o un frontend separato (nel nostro caso, un frontend Blazor WebAssembly — vedi sezione 10)
 
 Questa scelta tiene la logica di business separata e "pulita" dal frontend, permettendo di costruirci sopra qualsiasi client in futuro.
 
@@ -683,24 +683,323 @@ Senza un token valido, una richiesta a un endpoint protetto riceve **401 Unautho
 
 ---
 
-## 10. Piano futuro (non ancora affrontato)
+## 10. Frontend: Blazor WebAssembly (completato)
 
-- Differenziazione dei permessi per ruolo con `[Authorize(Roles = "...")]` (vedi sezione 9.13)
-- Spostare la `Jwt:Key` fuori da `appsettings.json` (user-secrets in locale, variabile d'ambiente/secret manager in produzione — vedi nota in 9.7)
+**Punto in cui si è arrivati**: il backend (API + JWT) funziona ed è stato testato. Questa sezione racconta la costruzione del frontend: un'applicazione separata che consuma l'API tramite chiamate HTTP, con login, registrazione e una pagina protetta per gestire i progetti.
+
+### 10.1 Perché Blazor WebAssembly, e non React/Angular/Vue
+
+Con l'API già pronta, la scelta del frontend è in realtà indipendente dal linguaggio: un'API REST può essere "consumata" da QUALSIASI tecnologia capace di fare richieste HTTP (JavaScript, mobile, un altro servizio, ecc. — vedi sezione 1.1).
+
+Per un progetto di apprendimento in C#, però, **Blazor WebAssembly** è la scelta più coerente dal punto di vista didattico:
+- resta nello stesso linguaggio (C#) e nello stesso IDE (Visual Studio) usati per il backend — non bisogna imparare contemporaneamente ASP.NET Core E un intero ecosistema JavaScript (npm, bundler, sintassi diversa) solo per vedere l'API "in azione";
+- è comunque una **SPA (Single Page Application)** vera e propria, della stessa famiglia concettuale di React/Angular: gira interamente nel browser, chiama l'API in background, aggiorna la pagina senza ricaricarla — quindi i concetti imparati qui (routing lato client, stato di autenticazione, chiamate HTTP asincrone) si trasferiscono comunque a qualsiasi altro framework SPA;
+- "WebAssembly" (contro l'alternativa "Blazor Server") significa che tutto il codice C# del frontend viene scaricato dal browser e **eseguito lì**, non sul server — è l'opzione che obbliga davvero a trattare il frontend come un client separato che deve autenticarsi con un token, proprio come farebbe un'app scritta in un altro linguaggio. Blazor Server, al contrario, terrebbe la UI "in vita" sul server tramite una connessione persistente (SignalR), nascondendo di fatto il problema di autenticazione via JWT che qui si vuole invece imparare a risolvere.
+
+### 10.2 Creazione del progetto e struttura della solution
+
+Comandi eseguiti dalla cartella che contiene già `TaskManager.Api/`:
+
+```bash
+dotnet new blazorwasm -o TaskManager.Client -n TaskManager.Client   # crea il progetto Blazor WebAssembly standalone
+dotnet sln TaskManager.Api.slnx add TaskManager.Client/TaskManager.Client.csproj   # lo aggiunge alla solution esistente
+```
+
+Risultato: **due progetti indipendenti** nella stessa solution/cartella, che comunicano SOLO via HTTP (non si referenziano a vicenda come progetti .NET):
+
+```
+TaskManager.Api/            (solution)
+├── TaskManager.Api/         ← backend: ASP.NET Core Web API (sezioni 1-9)
+└── TaskManager.Client/      ← frontend: Blazor WebAssembly (questa sezione)
+```
+
+> **Scelta didattica consapevole — niente progetto condiviso**: i DTO del frontend (`TaskManager.Client/Models/`) sono copie scritte a mano delle classi equivalenti lato server (`TaskManager.Api/Dtos/`), non lo stesso file condiviso tramite un terzo progetto (`TaskManager.Shared`, una pratica comune in progetti Blazor reali). La duplicazione è voluta in questa fase: tiene i due progetti completamente indipendenti e più facili da seguire separatamente mentre si imparano i concetti; va segnalata come primo miglioramento strutturale futuro (sezione 11).
+
+### 10.3 Il problema del CORS
+
+Avviando entrambi i progetti in locale, girano su **origini diverse** (stesso computer, ma protocollo/porta diversi contano come origine diversa agli occhi del browser):
+- API: `https://localhost:7076`
+- Client: `https://localhost:7159`
+
+Per difetto, un browser blocca qualsiasi richiesta che il codice JavaScript/WebAssembly di una pagina prova a fare verso un'origine diversa da quella da cui la pagina stessa è stata caricata (politica di sicurezza chiamata **Same-Origin Policy**) — altrimenti una qualunque pagina web potrebbe silenziosamente fare richieste verso i siti bancari dell'utente usando i suoi cookie. **CORS (Cross-Origin Resource Sharing)** è il meccanismo con cui un server dichiara esplicitamente "fidati, queste altre origini possono chiamarmi".
+
+Configurato in `TaskManager.Api/Program.cs`:
+
+```csharp
+const string ClientCorsPolicy = "ClientCorsPolicy";
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy(ClientCorsPolicy, policy =>
+    {
+        policy.WithOrigins("https://localhost:7159", "http://localhost:5097")
+              .AllowAnyHeader()   // serve per lasciar passare anche "Authorization: Bearer ..."
+              .AllowAnyMethod();  // GET, POST, PUT, DELETE
+    });
+});
+```
+
+E attivato nella pipeline, **prima** di `UseAuthentication`/`UseAuthorization` (l'ordine conta, come già visto in 9.10):
+
+```csharp
+app.UseHttpsRedirection();
+app.UseCors(ClientCorsPolicy);
+app.UseAuthentication();
+app.UseAuthorization();
+```
+
+> Da tenere a mente: `WithOrigins(...)` elenca indirizzi fissi, validi solo in sviluppo in locale. Se un giorno il frontend verrà pubblicato online con un suo dominio, la policy andrà aggiornata con quel dominio reale.
+
+### 10.4 I modelli lato client (`Models/`)
+
+Stessa idea dei DTO lato server (sezione 8), applicata al frontend: classi che descrivono SOLO la forma dei dati scambiati con l'API via JSON, senza nessuna logica.
+
+```csharp
+// Models/AuthModels.cs
+public class LoginModel
+{
+    [Required(ErrorMessage = "L'email è obbligatoria.")]
+    [EmailAddress(ErrorMessage = "Inserisci un'email valida.")]
+    public string Email { get; set; } = string.Empty;
+
+    [Required(ErrorMessage = "La password è obbligatoria.")]
+    public string Password { get; set; } = string.Empty;
+}
+```
+
+Novità rispetto ai DTO lato server: gli attributi **`[DataAnnotations]`** (`[Required]`, `[EmailAddress]`, `[MinLength]`). Blazor li legge automaticamente dentro un `<EditForm>` (sezione 10.10) per validare i campi **nel browser, prima ancora di contattare il server** — un feedback immediato per l'utente. Il server, però, convalida comunque i propri input in autonomia: non ci si fida mai dei soli controlli lato client, che un utente smaliziato potrebbe disattivare modificando il codice della pagina.
+
+### 10.5 `HttpClient` "con nome" e il `DelegatingHandler` — allegare il token automaticamente
+
+Ogni chiamata a un endpoint protetto deve portare l'header `Authorization: Bearer <token>` (sezione 9.11). Scriverlo a mano in OGNI chiamata, in OGNI pagina, sarebbe facile da sbagliare e da dimenticare — la soluzione è un **`DelegatingHandler`**: una classe che si inserisce automaticamente nel percorso di ogni richiesta fatta da un certo `HttpClient`, e può modificarla prima che parta.
+
+```csharp
+// Services/AuthorizationMessageHandler.cs
+public class AuthorizationMessageHandler : DelegatingHandler
+{
+    private readonly ILocalStorageService _localStorage;
+
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var token = await _localStorage.GetItemAsync<string>("authToken", cancellationToken);
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        }
+        return await base.SendAsync(request, cancellationToken);   // passa la richiesta avanti
+    }
+}
+```
+
+Collegato in `Program.cs` a un `HttpClient` registrato "con nome" (`"Api"`), tramite `AddHttpMessageHandler`:
+
+```csharp
+builder.Services.AddTransient<AuthorizationMessageHandler>();
+
+builder.Services.AddHttpClient("Api", client => client.BaseAddress = new Uri(apiBaseUrl))
+    .AddHttpMessageHandler<AuthorizationMessageHandler>();
+
+// Così ogni servizio può semplicemente chiedere "dammi un HttpClient" senza
+// specificare ogni volta il nome "Api":
+builder.Services.AddScoped(sp => sp.GetRequiredService<IHttpClientFactory>().CreateClient("Api"));
+```
+
+Risultato: **ogni** richiesta fatta da quell'`HttpClient` (login escluso, perché lì non esiste ancora un token da allegare) passa automaticamente dall'handler, che aggiunge l'header se un token è presente. Nessuna pagina Razor deve più occuparsene.
+
+### 10.6 Dove vive il token nel browser — `localStorage`
+
+Il token deve "sopravvivere" alla chiusura/ricarica della pagina (altrimenti l'utente dovrebbe rifare login ogni volta) — una semplice variabile C# in memoria non basta, perché Blazor WebAssembly rilancerebbe da zero tutto il codice a ogni refresh del browser.
+
+**`localStorage`** è uno spazio di archiviazione messo a disposizione dal browser stesso, specifico per ogni sito (origine), che resta popolato anche chiudendo la scheda. Blazor di per sé non può leggerlo/scriverlo direttamente (è un'API JavaScript del browser, non .NET) — per questo si usa il pacchetto NuGet **`Blazored.LocalStorage`**, che fa da "ponte" (JS Interop) ed espone un servizio .NET pulito:
+
+```csharp
+await _localStorage.SetItemAsync("authToken", authResponse.Token);   // scrive
+var token = await _localStorage.GetItemAsync<string>("authToken");   // legge
+await _localStorage.RemoveItemAsync("authToken");                    // rimuove (logout)
+```
+
+### 10.7 `ApiAuthenticationStateProvider` — insegnare a Blazor chi è l'utente loggato
+
+Blazor ha un concetto proprio, indipendente da ASP.NET Core "server-side", per rispondere alla domanda "chi è l'utente attuale?": la classe astratta **`AuthenticationStateProvider`**. Di base, in un progetto Blazor WebAssembly standalone, non esiste nessuna implementazione pronta — va scritta.
+
+```csharp
+public class ApiAuthenticationStateProvider : AuthenticationStateProvider
+{
+    private static readonly ClaimsPrincipal Anonymous = new(new ClaimsIdentity());
+
+    public override async Task<AuthenticationState> GetAuthenticationStateAsync()
+    {
+        var token = await _localStorage.GetItemAsync<string>("authToken");
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return new AuthenticationState(Anonymous);
+        }
+
+        var claims = ParseClaimsFromJwt(token);               // decodifica il payload del token
+        var identity = new ClaimsIdentity(claims, authenticationType: "jwt");
+        return new AuthenticationState(new ClaimsPrincipal(identity));
+    }
+
+    public void NotifyUserChanged()
+        => NotifyAuthenticationStateChanged(GetAuthenticationStateAsync());
+}
+```
+
+Concetti chiave:
+- **`ClaimsPrincipal`**: la rappresentazione .NET standard di "un utente e tutto ciò che sappiamo di lui" — un insieme di `Claim` (esattamente gli stessi messi dal server nel token, sezione 9.8: Id, nome, email, ruolo).
+- **Niente verifica della firma qui**: il client si limita a LEGGERE il contenuto del token (il payload è solo codificato in Base64, non cifrato — sezione 9.3), non può e non deve verificarne la firma, perché non possiede (e non deve possedere) la chiave segreta. La verifica vera e propria la fa sempre e solo il server, a ogni singola richiesta (sezione 9.10) — qui serve solo per sapere "cosa mostrare" nell'interfaccia.
+- **`NotifyUserChanged()`**: un metodo custom (non fa parte della classe base) richiamato subito dopo login/logout, per dire esplicitamente a Blazor "lo stato è cambiato, ridisegna tutto quello che dipende dall'autenticazione" (NavMenu, pagine protette, ecc.).
+
+Registrato in `Program.cs` come servizio **Scoped** sia con il proprio tipo concreto sia come `AuthenticationStateProvider` (il tipo che i componenti Blazor si aspettano di poter richiedere):
+```csharp
+builder.Services.AddAuthorizationCore();   // abilita il sistema di autorizzazione nei componenti Razor
+builder.Services.AddScoped<ApiAuthenticationStateProvider>();
+builder.Services.AddScoped<AuthenticationStateProvider>(sp => sp.GetRequiredService<ApiAuthenticationStateProvider>());
+```
+
+### 10.8 `AuthService` — login, registrazione, logout
+
+Centralizza tutte le chiamate di autenticazione, così le pagine Razor restano semplici (si limitano a chiamare un metodo e mostrare il risultato):
+
+```csharp
+public async Task<string?> LoginAsync(LoginModel model)   // null = successo, altrimenti messaggio d'errore
+{
+    var response = await _http.PostAsJsonAsync("api/auth/login", model);
+    if (!response.IsSuccessStatusCode) return "Email o password non validi.";
+
+    var authResponse = await response.Content.ReadFromJsonAsync<AuthResponse>();
+    await _localStorage.SetItemAsync("authToken", authResponse!.Token);
+    _authStateProvider.NotifyUserChanged();   // avvisa Blazor del nuovo stato
+    return null;
+}
+```
+
+`RegisterAsync` è analogo ma chiama `api/auth/register` e **non** salva nessun token: coerentemente con l'API (sezione 9.9), la registrazione crea solo l'utente — il token si ottiene con un login esplicito successivo.
+
+### 10.9 Proteggere le pagine: `CascadingAuthenticationState` e `AuthorizeRouteView`
+
+Perché una pagina con l'attributo `[Authorize]` (lo stesso usato lato server, sezione 9.11 — ma qui applicato a un COMPONENTE Razor, non a un controller) sia davvero bloccata per chi non è loggato, il router di Blazor va configurato per controllarlo. In `App.razor`:
+
+```razor
+<CascadingAuthenticationState>
+    <Router AppAssembly="@typeof(App).Assembly" NotFoundPage="typeof(Pages.NotFound)">
+        <Found Context="routeData">
+            <AuthorizeRouteView RouteData="@routeData" DefaultLayout="@typeof(MainLayout)">
+                <NotAuthorized>
+                    <p>Devi accedere per vedere questa pagina. <a href="/login">Vai al login</a>.</p>
+                </NotAuthorized>
+            </AuthorizeRouteView>
+        </Found>
+    </Router>
+</CascadingAuthenticationState>
+```
+
+- **`CascadingAuthenticationState`**: rende lo stato di autenticazione (calcolato da `ApiAuthenticationStateProvider`, sezione 10.7) disponibile a TUTTI i componenti figli, a qualsiasi livello di profondità, senza doverlo passare manualmente da un componente al genitore successivo — da qui il nome "a cascata".
+- **`AuthorizeRouteView`**: sostituto del semplice `RouteView` del template di base; prima di mostrare la pagina richiesta controlla se ha `[Authorize]` e, in caso affermativo, se l'utente risulta autenticato. Se non lo è, mostra il contenuto di `<NotAuthorized>` invece della pagina — il codice C# della pagina protetta non viene nemmeno eseguito.
+
+Sulla pagina stessa, basta l'attributo in cima al file (equivalente dell'attributo su un controller):
+```razor
+@page "/projects"
+@attribute [Authorize]
+```
+
+### 10.10 `<AuthorizeView>` — mostrare/nascondere pezzi di interfaccia
+
+Diverso da `[Authorize]` (che blocca l'INTERA pagina): `<AuthorizeView>` permette di mostrare contenuti diversi nella STESSA pagina a seconda del login, utile per il menu di navigazione o la Home:
+
+```razor
+<AuthorizeView>
+    <Authorized>
+        <p>Sei autenticato come <strong>@context.User.Identity?.Name</strong>.</p>
+        <a href="/projects">Vai ai tuoi progetti</a>
+    </Authorized>
+    <NotAuthorized>
+        <p>Per iniziare, <a href="/login">accedi</a> oppure <a href="/register">crea un account</a>.</p>
+    </NotAuthorized>
+</AuthorizeView>
+```
+
+Usato sia in `Home.razor` sia in `Layout/NavMenu.razor` (dove mostra "Progetti"/"Esci" se loggato, "Accedi"/"Registrati" altrimenti).
+
+### 10.11 Le pagine
+
+| Pagina | Route | Protetta? | Cosa fa |
+|---|---|---|---|
+| `Home.razor` | `/` | No | Messaggio di benvenuto, link diversi in base al login (`<AuthorizeView>`) |
+| `Login.razor` | `/login` | No | `<EditForm>` con email/password, chiama `AuthService.LoginAsync`, poi redirige a `/projects` |
+| `Register.razor` | `/register` | No | `<EditForm>` con nome utente/email/password, chiama `AuthService.RegisterAsync` |
+| `Projects.razor` | `/projects` | **Sì** (`[Authorize]`) | CRUD completo sui progetti: lista (`GET`), creazione (`POST`), modifica in linea (`PUT`), eliminazione (`DELETE`) |
+
+`Projects.razor` ricalca lo stesso pattern CRUD già visto lato server (sezione 7), ma dal punto di vista del client — stesso concetto di "early return"/caricamento asincrono, applicato questa volta nel ciclo di vita di un componente Blazor:
+
+```csharp
+protected override async Task OnInitializedAsync()   // eseguito una volta sola, alla creazione del componente
+{
+    projects = await ProjectService.GetAllAsync();    // GET api/projects, con il token già allegato dall'handler
+}
+```
+
+`ProjectService` (in `Services/ProjectService.cs`) è un semplice "wrapper" attorno a `HttpClient`, con lo stesso scopo del `_context` nei controller lato server: isolare le chiamate CRUD in un unico posto riutilizzabile, invece di scrivere `GetFromJsonAsync`/`PostAsJsonAsync` direttamente dentro ogni pagina.
+
+### 10.12 Configurazione: `wwwroot/appsettings.json`
+
+L'indirizzo dell'API non è scritto a mano nel codice C#, ma letto da un file di configurazione — esattamente come la stringa di connessione al database lato server (sezione 4):
+
+```json
+{
+  "ApiBaseUrl": "https://localhost:7076/"
+}
+```
+
+```csharp
+var apiBaseUrl = builder.Configuration["ApiBaseUrl"]
+    ?? throw new InvalidOperationException("Impostazione 'ApiBaseUrl' non trovata in appsettings.json");
+```
+
+Così, se un giorno l'API cambia porta o viene pubblicata online con un dominio reale, basta modificare questo file — nessun codice C# da ricompilare.
+
+### 10.13 Come avviare backend e frontend insieme
+
+Sono due applicazioni **indipendenti**: vanno avviate entrambe, in due processi separati.
+
+- **Da Visual Studio**: tasto destro sulla solution → **Proprietà** → "Progetti di avvio multipli" → impostare sia `TaskManager.Api` sia `TaskManager.Client` su "Avvia" → F5 avvia entrambi insieme, ciascuno nel proprio terminale/finestra browser.
+- **Da due terminali separati**, uno per cartella:
+  ```bash
+  cd TaskManager.Api && dotnet watch run
+  cd TaskManager.Client && dotnet watch run
+  ```
+
+L'ordine di avvio non è rigido, ma se il frontend parte prima e si prova subito a fare login, la chiamata fallirà finché anche l'API non è pronta (il messaggio d'errore gestito in `Projects.razor`, "Impossibile contattare l'API", copre proprio questo caso).
+
+### 10.14 Limiti noti e semplificazioni didattiche (consapevoli)
+
+- **Nessun refresh automatico del token**: dopo 60 minuti (`Jwt:ExpireMinutes`) il token scade e le richieste protette torneranno 401 — l'utente deve rifare login manualmente. Un'app reale implementerebbe un "refresh token" per rinnovarlo in automatico.
+- **DTO duplicati, non condivisi** (vedi nota in 10.2).
+- **Nessuna differenziazione di permessi nella UI**: il frontend non nasconde/mostra ancora pulsanti in base al `Role` (Owner/Member) — rimanda alla sezione 9.13, non ancora affrontata nemmeno lato server.
+- **CORS con indirizzi fissi**, validi solo in sviluppo locale (vedi nota in 10.3).
+
+---
+
+## 11. Piano futuro (non ancora affrontato)
+
+- Differenziazione dei permessi per ruolo con `[Authorize(Roles = "...")]`, sia lato API (sezione 9.13) sia nella UI del frontend (nascondere/mostrare azioni in base al `Role`)
+- Progetto `TaskManager.Shared` per eliminare la duplicazione dei DTO tra backend e frontend (sezione 10.2)
+- Refresh token, per evitare che l'utente debba rifare login ogni volta che il JWT scade (sezione 10.14)
+- Pagine frontend per `TaskItem` e `Comment` (oggi solo `Project` ha una pagina CRUD completa)
 - Test con dati realmente collegati tra loro (Project con Task assegnati a User specifici) — verificare dal vivo il comportamento delle relazioni e il rischio di cicli di serializzazione JSON quando si useranno `Include()`
-- Frontend, da costruire ora che le API e l'autenticazione sono funzionanti
 - Possibili raffinamenti futuri:
   - `OnModelCreating` per configurazioni esplicite su relazioni più complesse (es. se la relazione molti-a-molti User-Project dovesse arricchirsi di dati propri, come il ruolo dell'utente in quello specifico progetto)
   - Endpoint dedicato per spostare un `TaskItem` tra `Project` diversi, separato dal PUT generico di aggiornamento (separazione delle responsabilità)
   - Filtri/ricerca sui Task, notifiche, statistiche/dashboard
+  - Pubblicazione online di backend e frontend (hosting reale, HTTPS con certificato valido, CORS con dominio vero)
 
 ---
 
-## 11. Comandi da terminale utilizzati (in ordine cronologico)
+## 12. Comandi da terminale utilizzati (in ordine cronologico)
 
 Di seguito tutti i comandi bash/terminale incontrati durante lo sviluppo, nell'ordine in cui sono comparsi nel percorso.
 
-### 11.1 Setup Git / GitHub
+### 12.1 Setup Git / GitHub
 
 | Comando | Effetto |
 |---|---|
@@ -712,13 +1011,13 @@ Di seguito tutti i comandi bash/terminale incontrati durante lo sviluppo, nell'o
 | `git branch -M main` | Rinomina il branch principale in "main" |
 | `git push -u origin main` | Invia (push) i commit locali al repository remoto su GitHub, e imposta "origin main" come destinazione predefinita per i push successivi |
 
-### 11.2 Certificato HTTPS di sviluppo
+### 12.2 Certificato HTTPS di sviluppo
 
 | Comando | Effetto |
 |---|---|
 | `dotnet dev-certs https --trust` | Genera (se non esiste) e installa come affidabile il certificato HTTPS di sviluppo di ASP.NET Core, necessario per far funzionare HTTPS in locale su localhost senza avvisi del browser |
 
-### 11.3 Pacchetti NuGet installati
+### 12.3 Pacchetti NuGet installati — backend (`TaskManager.Api`)
 
 | Comando | Effetto |
 |---|---|
@@ -729,7 +1028,7 @@ Di seguito tutti i comandi bash/terminale incontrati durante lo sviluppo, nell'o
 | `dotnet add package Microsoft.AspNetCore.Authentication.JwtBearer` | Installa le classi per generare e validare token JWT (`JwtSecurityToken`, `TokenValidationParameters`, schema di autenticazione `Bearer`) |
 | `dotnet tool install --global dotnet-ef` | (Solo se `dotnet ef` non viene riconosciuto) Installa globalmente lo strumento a riga di comando di Entity Framework Core |
 
-### 11.4 Migrations e database (Entity Framework Core)
+### 12.4 Migrations e database (Entity Framework Core)
 
 | Comando | Effetto |
 |---|---|
@@ -737,18 +1036,42 @@ Di seguito tutti i comandi bash/terminale incontrati durante lo sviluppo, nell'o
 | `dotnet ef migrations remove` | Rimuove l'ultima Migration generata (non ancora applicata al database), usato quando il modello cambia prima di aver eseguito `database update` |
 | `dotnet ef database update` | Applica davvero le istruzioni della Migration al database, creando o modificando concretamente le tabelle |
 
-### 11.5 Avvio dell'applicazione
+### 12.5 .NET User Secrets (chiave JWT)
+
+| Comando | Effetto |
+|---|---|
+| `dotnet user-secrets init` | Crea un `UserSecretsId` univoco nel `.csproj` (quello sì va committato: è solo un identificativo, non un segreto) e la cartella locale associata dove i secret verranno salvati |
+| `dotnet user-secrets set "Jwt:Key" "<valore>"` | Salva la chiave di firma JWT fuori dal progetto (non tracciata da Git), caricata automaticamente in ambiente Development |
+
+### 12.6 Creazione e collegamento del progetto frontend (`TaskManager.Client`)
+
+| Comando | Effetto |
+|---|---|
+| `dotnet new blazorwasm -o TaskManager.Client -n TaskManager.Client` | Genera un nuovo progetto Blazor WebAssembly standalone nella cartella `TaskManager.Client` |
+| `dotnet sln TaskManager.Api.slnx add TaskManager.Client/TaskManager.Client.csproj` | Aggiunge il nuovo progetto alla solution esistente, così Visual Studio lo mostra insieme al backend |
+
+### 12.7 Pacchetti NuGet installati — frontend (`TaskManager.Client`)
+
+| Comando | Effetto |
+|---|---|
+| `dotnet add package Microsoft.AspNetCore.Components.Authorization` | Fornisce `AuthenticationStateProvider`, `<AuthorizeView>`, `CascadingAuthenticationState`, `AuthorizeRouteView` — l'infrastruttura di autenticazione/autorizzazione lato componenti Blazor |
+| `dotnet add package Blazored.LocalStorage` | Espone il `localStorage` del browser come servizio .NET (`ILocalStorageService`), usato per salvare il token JWT tra una visita e l'altra |
+| `dotnet add package Microsoft.Extensions.Http` | Fornisce `AddHttpClient`/`IHttpClientFactory`, per registrare un `HttpClient` "con nome" con un `DelegatingHandler` collegato |
+
+### 12.8 Avvio dell'applicazione
 
 | Comando | Effetto |
 |---|---|
 | `dotnet run` | Compila e avvia l'applicazione da terminale. Non apre automaticamente il browser (a differenza di F5 in Visual Studio) e può usare solo il profilo HTTP di default, non HTTPS |
 | `dotnet watch run` | Come `dotnet run`, ma ricompila e riavvia automaticamente il progetto ogni volta che un file viene salvato — comodo durante lo sviluppo attivo, evita di fermare/riavviare manualmente ad ogni modifica |
 
-### 11.6 Compilazione
+> Con due progetti (backend + frontend) va eseguito separatamente in due terminali — vedi sezione 10.13.
+
+### 12.9 Compilazione
 
 | Scorciatoia | Effetto |
 |---|---|
-| `Ctrl+Shift+B` (Visual Studio, non un comando bash) | Compila l'intera solution, utile per verificare rapidamente la presenza di errori senza dover avviare l'applicazione |
+| `Ctrl+Shift+B` (Visual Studio, non un comando bash) | Compila l'intera solution (entrambi i progetti), utile per verificare rapidamente la presenza di errori senza dover avviare l'applicazione |
 
 ---
 
@@ -775,6 +1098,9 @@ Di seguito tutti i comandi bash/terminale incontrati durante lo sviluppo, nell'o
 | **MVC** | Model-View-Controller | Pattern architetturale che separa dati (Model), interfaccia (View) e logica di controllo (Controller) |
 | **IDE** | Integrated Development Environment | Ambiente di sviluppo integrato — es. Visual Studio |
 | **NuGet** | — (nome proprio, non un acronimo) | Gestore di pacchetti/librerie ufficiale per l'ecosistema .NET |
+| **SPA** | Single Page Application | Applicazione web che carica una sola pagina HTML e poi aggiorna il contenuto dinamicamente (via JavaScript/WebAssembly), senza ricaricare l'intera pagina a ogni navigazione |
+| **WASM** | WebAssembly | Formato binario eseguibile direttamente dal browser a velocità prossima al codice nativo; è ciò che permette a Blazor di eseguire codice C# (compilato in WASM) interamente lato client |
+| **CORS** | Cross-Origin Resource Sharing | Meccanismo con cui un server dichiara esplicitamente quali altre origini (domini/porte) sono autorizzate a chiamarlo da codice eseguito nel browser |
 
 ---
 
@@ -792,6 +1118,13 @@ Di seguito tutti i comandi bash/terminale incontrati durante lo sviluppo, nell'o
 | `Task` / `Task<T>` | Rappresentano un'operazione asincrona in corso, con o senza un valore di ritorno |
 | `PasswordHasher<T>` | Classe di ASP.NET Core Identity per hashare/verificare le password in modo sicuro |
 | `ActionResult<T>` | Tipo di ritorno che permette a un metodo di un controller di restituire sia un oggetto `T` sia una risposta HTTP esplicita (`NotFound`, `Ok`, ecc.) |
+| `ClaimsPrincipal` / `Claim` | Rappresentazione .NET standard di "un utente autenticato": un insieme di `Claim` (coppie chiave-valore come Id, nome, ruolo) che descrivono chi è |
+| `AuthenticationStateProvider` | Classe Blazor che risponde alla domanda "chi è l'utente attuale?"; nei progetti standalone va implementata a mano (qui: `ApiAuthenticationStateProvider`) |
+| `DelegatingHandler` | Classe che si inserisce nel percorso di ogni richiesta di un `HttpClient`, potendola leggere o modificare prima che parta (qui: per aggiungere l'header `Authorization`) |
+| `localStorage` | Spazio di archiviazione del browser, specifico per sito, che sopravvive alla chiusura della pagina — usato per conservare il token JWT tra una visita e l'altra |
+| `<AuthorizeView>` | Componente Blazor che mostra contenuti diversi nella stessa pagina in base al login, senza bloccare l'intera pagina (a differenza di `[Authorize]`) |
+| `CascadingAuthenticationState` | Componente che rende lo stato di autenticazione disponibile a tutti i componenti figli, a qualsiasi profondità, senza passarlo manualmente |
+| JS Interop | Meccanismo con cui codice C# in Blazor WebAssembly chiama funzioni JavaScript del browser (es. l'accesso a `localStorage`), e viceversa |
 
 ---
 

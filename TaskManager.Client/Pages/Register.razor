@@ -1,0 +1,74 @@
+@page "/register"
+@inject AuthService AuthService
+@inject NavigationManager Navigation
+
+<PageTitle>Registrati</PageTitle>
+
+<h1>Crea un account</h1>
+
+<EditForm Model="@registerModel" OnValidSubmit="HandleRegisterAsync" FormName="register">
+    <DataAnnotationsValidator />
+    <ValidationSummary class="text-danger" />
+
+    <div class="mb-3">
+        <label class="form-label" for="userName">Nome utente</label>
+        <InputText id="userName" class="form-control" @bind-Value="registerModel.UserName" />
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label" for="email">Email</label>
+        <InputText id="email" class="form-control" @bind-Value="registerModel.Email" />
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label" for="password">Password</label>
+        <InputText id="password" type="password" class="form-control" @bind-Value="registerModel.Password" />
+    </div>
+
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-danger">@errorMessage</div>
+    }
+
+    @if (registrationCompleted)
+    {
+        <div class="alert alert-success">Account creato! Ora puoi <a href="/login">accedere</a>.</div>
+    }
+
+    <button type="submit" class="btn btn-primary" disabled="@isLoading">
+        @(isLoading ? "Creazione in corso..." : "Registrati")
+    </button>
+</EditForm>
+
+<p class="mt-3">Hai già un account? <a href="/login">Accedi</a>.</p>
+
+@code {
+    private readonly RegisterModel registerModel = new();
+    private string? errorMessage;
+    private bool isLoading;
+    private bool registrationCompleted;
+
+    private async Task HandleRegisterAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+        registrationCompleted = false;
+
+        var result = await AuthService.RegisterAsync(registerModel);
+
+        isLoading = false;
+
+        if (result is null)
+        {
+            // A differenza del login, dopo la registrazione NON facciamo accedere
+            // automaticamente l'utente: l'endpoint /api/auth/register restituisce
+            // solo i dati dell'utente creato, non un token (il token si ottiene
+            // solo con un login esplicito, vedi AuthController.cs lato server).
+            registrationCompleted = true;
+        }
+        else
+        {
+            errorMessage = result;
+        }
+    }
+}

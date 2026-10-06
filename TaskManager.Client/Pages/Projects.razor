@@ -1,0 +1,170 @@
+@page "/projects"
+@attribute [Authorize]
+@inject ProjectService ProjectService
+
+<PageTitle>Progetti</PageTitle>
+
+<h1>I miei progetti</h1>
+
+@*
+    Questa pagina ha [Authorize] in cima: se arrivi qui senza un token
+    valido salvato nel browser, AuthorizeRouteView (in App.razor) mostra
+    il messaggio "Devi accedere" invece del contenuto qui sotto — il
+    codice sotto @code{} non viene nemmeno eseguito.
+*@
+
+@if (isLoading)
+{
+    <p><em>Caricamento progetti in corso...</em></p>
+}
+else
+{
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-danger">@errorMessage</div>
+    }
+
+    <h2>Nuovo progetto</h2>
+    <EditForm Model="@newProject" OnValidSubmit="HandleCreateAsync" FormName="newProject">
+        <div class="row g-2 align-items-end mb-4">
+            <div class="col-auto">
+                <label class="form-label" for="name">Nome</label>
+                <InputText id="name" class="form-control" @bind-Value="newProject.Name" />
+            </div>
+            <div class="col-auto">
+                <label class="form-label" for="description">Descrizione</label>
+                <InputText id="description" class="form-control" @bind-Value="newProject.Description" />
+            </div>
+            <div class="col-auto">
+                <button type="submit" class="btn btn-primary">Crea</button>
+            </div>
+        </div>
+    </EditForm>
+
+    <h2>Elenco progetti</h2>
+    @if (projects.Count == 0)
+    {
+        <p>Nessun progetto ancora. Creane uno con il form sopra.</p>
+    }
+    else
+    {
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Nome</th>
+                    <th>Descrizione</th>
+                    <th>Creato il</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var project in projects)
+                {
+                    <tr>
+                        @if (editingProjectId == project.Id)
+                        {
+                            <td><InputText class="form-control" @bind-Value="project.Name" /></td>
+                            <td><InputText class="form-control" @bind-Value="project.Description" /></td>
+                            <td>@project.CreatedAt.ToShortDateString()</td>
+                            <td>
+                                <button class="btn btn-sm btn-success" @onclick="() => HandleUpdateAsync(project)">Salva</button>
+                                <button class="btn btn-sm btn-secondary" @onclick="() => editingProjectId = null">Annulla</button>
+                            </td>
+                        }
+                        else
+                        {
+                            <td>@project.Name</td>
+                            <td>@project.Description</td>
+                            <td>@project.CreatedAt.ToShortDateString()</td>
+                            <td>
+                                <button class="btn btn-sm btn-outline-primary" @onclick="() => editingProjectId = project.Id">Modifica</button>
+                                <button class="btn btn-sm btn-outline-danger" @onclick="() => HandleDeleteAsync(project.Id)">Elimina</button>
+                            </td>
+                        }
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+}
+
+@code {
+    private List<ProjectModel> projects = new();
+    private readonly ProjectModel newProject = new();
+    private int? editingProjectId;
+    private bool isLoading = true;
+    private string? errorMessage;
+
+    // OnInitializedAsync viene eseguito automaticamente da Blazor una sola
+    // volta, quando il componente viene creato — il posto giusto dove
+    // caricare dati da un'API, invece che nel costruttore (che non può
+    // essere "async").
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadProjectsAsync();
+    }
+
+    private async Task LoadProjectsAsync()
+    {
+        isLoading = true;
+        try
+        {
+            projects = await ProjectService.GetAllAsync();
+        }
+        catch (Exception)
+        {
+            errorMessage = "Impossibile contattare l'API. Verifica che TaskManager.Api sia in esecuzione.";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task HandleCreateAsync()
+    {
+        if (string.IsNullOrWhiteSpace(newProject.Name))
+        {
+            return;
+        }
+
+        var success = await ProjectService.CreateAsync(newProject);
+        if (success)
+        {
+            newProject.Name = string.Empty;
+            newProject.Description = string.Empty;
+            await LoadProjectsAsync();
+        }
+        else
+        {
+            errorMessage = "Creazione del progetto non riuscita.";
+        }
+    }
+
+    private async Task HandleUpdateAsync(ProjectModel project)
+    {
+        var success = await ProjectService.UpdateAsync(project.Id, project);
+        if (success)
+        {
+            editingProjectId = null;
+            await LoadProjectsAsync();
+        }
+        else
+        {
+            errorMessage = "Aggiornamento del progetto non riuscito.";
+        }
+    }
+
+    private async Task HandleDeleteAsync(int id)
+    {
+        var success = await ProjectService.DeleteAsync(id);
+        if (success)
+        {
+            await LoadProjectsAsync();
+        }
+        else
+        {
+            errorMessage = "Eliminazione del progetto non riuscita.";
+        }
+    }
+}
